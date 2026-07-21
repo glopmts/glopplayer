@@ -6,8 +6,8 @@ import 'package:just_audio/just_audio.dart';
 import 'package:on_audio_query_forked/on_audio_query.dart';
 import 'package:provider/provider.dart';
 
-import '../services/player_controller.dart';
-import '../widgets/artwork_thumbnail.dart';
+import '../../services/player_controller.dart';
+import '../../widgets/artwork_thumbnail.dart';
 
 class PlayerScreen extends StatelessWidget {
   const PlayerScreen({super.key});

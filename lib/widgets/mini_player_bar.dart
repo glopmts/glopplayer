@@ -3,7 +3,7 @@ import 'package:glopplayer/widgets/artwork_thumbnail.dart';
 import 'package:on_audio_query_forked/on_audio_query.dart';
 import 'package:provider/provider.dart';
 
-import '../screens/player_screen.dart';
+import '../screens/pages/player_screen.dart';
 import '../services/player_controller.dart';
 
 /// Barra fixa mostrando a música atual, com progresso e controles rápidos.

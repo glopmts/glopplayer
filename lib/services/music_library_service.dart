@@ -1,15 +1,40 @@
 import 'package:on_audio_query_forked/on_audio_query.dart';
 
+SongModel fakeSongModelFromExternalUri(String uriString) {
+  final uri = Uri.parse(uriString);
+  final isContentUri = uri.scheme == 'content';
+
+  String displayName;
+  String dataPath;
+
+  if (isContentUri) {
+    displayName = 'Áudio externo';
+    dataPath = ''; // content:// não tem path de arquivo tradicional
+  } else {
+    // uri.pathSegments ou uri.toFilePath() dependendo do scheme (file://)
+    dataPath = uri.scheme == 'file' ? uri.toFilePath() : uriString;
+    displayName = dataPath.split('/').last;
+  }
+
+  return SongModel({
+    '_id': -1,
+    'title': displayName,
+    'artist': 'Arquivo externo',
+    'album': null,
+    '_data': dataPath,
+    'duration': null,
+    'is_music': 1,
+    'is_podcast': 0,
+    'is_ringtone': 0,
+    'is_alarm': 0,
+    'is_notification': 0,
+    'is_audiobook': 0,
+  });
+}
+
 class MusicLibraryService {
   final OnAudioQuery _audioQuery = OnAudioQuery();
 
-  /// Trechos de caminho (em minúsculas) que indicam que o áudio NÃO é uma
-  /// música real, mesmo que a flag `isMusic` do MediaStore diga o contrário
-  /// (isso acontece bastante em ROMs customizadas, ex: MIUI).
-  ///
-  /// Propositalmente NÃO inclui "whatsapp audio" nem "telegram audio" —
-  /// essas pastas misturam notas de voz com músicas compartilhadas de
-  /// verdade, então excluir a pasta inteira jogaria fora música legítima.
   static const List<String> _excludedPathFragments = [
     '/whatsapp voice notes/',
     '/whatsapp business/media/whatsapp voice notes/',
@@ -32,11 +57,6 @@ class MusicLibraryService {
 
   Future<bool> get hasPermission => _audioQuery.permissionsStatus();
 
-  /// Considera "música real" quando:
-  /// 1. As flags do MediaStore não marcam como ringtone/notificação/alarme/podcast/audiobook
-  /// 2. `isMusic` não é explicitamente `false`
-  /// 3. O caminho do arquivo não bate com nenhuma pasta conhecida de
-  ///    gravações/notas de voz (defesa extra contra flags erradas do MIUI)
   bool _isRealMusic(SongModel song) {
     if (song.isRingtone == true) return false;
     if (song.isNotification == true) return false;
@@ -53,21 +73,48 @@ class MusicLibraryService {
     return true;
   }
 
-  Future<List<SongModel>> fetchAllSongs() async {
+  /// Verifica se [filePath] está dentro de alguma das [folders] (comparação
+  /// por prefixo de caminho, case-insensitive). Uma pasta "vazia" na lista
+  /// (null/empty) significa "sem restrição" — retorna tudo.
+  bool _isInsideAnyFolder(String filePath, List<String> folders) {
+    if (folders.isEmpty) return true;
+
+    final normalizedFile = filePath.toLowerCase();
+    for (final folder in folders) {
+      var normalizedFolder = folder.toLowerCase();
+      if (!normalizedFolder.endsWith('/')) {
+        normalizedFolder = '$normalizedFolder/';
+      }
+      if (normalizedFile.startsWith(normalizedFolder)) return true;
+    }
+    return false;
+  }
+
+  /// [restrictToFolders]: se vazio ou null, retorna músicas de qualquer
+  /// pasta (comportamento padrão). Se tiver pastas, só retorna músicas
+  /// cujo caminho está dentro de alguma delas — usado quando o usuário
+  /// configurou pastas específicas em "Local Library".
+  Future<List<SongModel>> fetchAllSongs(
+      {List<String>? restrictToFolders}) async {
     final songs = await _audioQuery.querySongs(
       sortType: SongSortType.TITLE,
       orderType: OrderType.ASC_OR_SMALLER,
       uriType: UriType.EXTERNAL,
       ignoreCase: true,
     );
-    return songs.where(_isRealMusic).toList();
+
+    final folders = restrictToFolders ?? const [];
+    return songs
+        .where(_isRealMusic)
+        .where((s) => _isInsideAnyFolder(s.data, folders))
+        .toList();
   }
 
-  /// Álbuns "reais" são derivados a partir das músicas já filtradas: um
-  /// álbum só aparece se tiver pelo menos 1 música que passou no filtro de
-  /// `_isRealMusic`. Isso evita, por exemplo, um "álbum" fantasma criado
-  /// pelo MediaStore a partir de uma pasta de notas de voz.
-  Future<List<AlbumModel>> fetchAllAlbums() async {
+  /// Álbuns são derivados a partir das músicas já filtradas (real + dentro
+  /// das pastas configuradas) — só aparece álbum que tem pelo menos 1
+  /// música válida dentro do escopo selecionado.
+  Future<List<AlbumModel>> fetchAllAlbums(
+      {List<String>? restrictToFolders}) async {
     final albums = await _audioQuery.queryAlbums(
       sortType: AlbumSortType.ALBUM,
       orderType: OrderType.ASC_OR_SMALLER,
@@ -75,21 +122,26 @@ class MusicLibraryService {
       ignoreCase: true,
     );
 
-    final realSongs = await fetchAllSongs();
+    final realSongs = await fetchAllSongs(restrictToFolders: restrictToFolders);
     final validAlbumIds =
         realSongs.map((s) => s.albumId).whereType<int>().toSet();
 
     return albums.where((a) => validAlbumIds.contains(a.id)).toList();
   }
 
-  /// Também filtra aqui — sem isso, abrir um álbum "misto" (ex: uma pasta
-  /// que tem 1 música real + 1 nota de voz salva por engano) mostraria a
-  /// nota de voz junto com as faixas.
-  Future<List<SongModel>> fetchSongsFromAlbum(int albumId) async {
+  Future<List<SongModel>> fetchSongsFromAlbum(
+    int albumId, {
+    List<String>? restrictToFolders,
+  }) async {
     final songs = await _audioQuery.queryAudiosFrom(
       AudiosFromType.ALBUM_ID,
       albumId,
     );
-    return songs.where(_isRealMusic).toList();
+
+    final folders = restrictToFolders ?? const [];
+    return songs
+        .where(_isRealMusic)
+        .where((s) => _isInsideAnyFolder(s.data, folders))
+        .toList();
   }
 }

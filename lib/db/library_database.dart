@@ -2,17 +2,16 @@ import 'package:path/path.dart' as p;
 import 'package:sqflite/sqflite.dart';
 
 /// Cache local (SQLite) das configurações e estatísticas da biblioteca de
-/// músicas — equivalente ao que a tela "Local Library" do print mostra:
-/// contagem de faixas, pasta configurada, última vez escaneada, flags de
-/// scan etc. Também guarda os arquivos já escaneados, usados tanto para
-/// detectar duplicatas quanto para permitir scan incremental (só olhar
-/// o que mudou desde o último scan).
+/// músicas, incluindo as pastas selecionadas pelo usuário (até 3) e os
+/// arquivos já escaneados, usados tanto para detectar duplicatas quanto
+/// para permitir scan incremental.
 class LibraryDatabase {
   LibraryDatabase._internal();
   static final LibraryDatabase instance = LibraryDatabase._internal();
 
   static const _dbName = 'library_cache.db';
-  static const _dbVersion = 1;
+  static const _dbVersion = 2;
+  static const maxFolders = 3;
 
   Database? _db;
 
@@ -34,11 +33,17 @@ class LibraryDatabase {
           CREATE TABLE library_settings (
             id INTEGER PRIMARY KEY CHECK (id = 1),
             enabled INTEGER NOT NULL DEFAULT 1,
-            folder_path TEXT NOT NULL DEFAULT '/storage/emulated/0/Music',
             show_duplicate_indicator INTEGER NOT NULL DEFAULT 1,
             auto_scan_frequency TEXT NOT NULL DEFAULT 'daily',
             track_count INTEGER NOT NULL DEFAULT 0,
             last_scanned_at INTEGER
+          )
+        ''');
+
+        await db.execute('''
+          CREATE TABLE library_folders (
+            path TEXT PRIMARY KEY,
+            added_at INTEGER NOT NULL
           )
         ''');
 
@@ -52,8 +57,39 @@ class LibraryDatabase {
           )
         ''');
 
-        // Garante que sempre existe exatamente 1 linha de configurações.
         await db.insert('library_settings', {'id': 1});
+      },
+      onUpgrade: (db, oldVersion, newVersion) async {
+        if (oldVersion < 2) {
+          // v1 tinha um único "folder_path" texto na tabela de settings.
+          // v2 migra para uma tabela de N pastas (até maxFolders).
+          await db.execute('''
+            CREATE TABLE IF NOT EXISTS library_folders (
+              path TEXT PRIMARY KEY,
+              added_at INTEGER NOT NULL
+            )
+          ''');
+
+          try {
+            final rows = await db.query('library_settings', where: 'id = 1');
+            if (rows.isNotEmpty) {
+              final oldPath = rows.first['folder_path'] as String?;
+              if (oldPath != null && oldPath.isNotEmpty) {
+                await db.insert(
+                  'library_folders',
+                  {
+                    'path': oldPath,
+                    'added_at': DateTime.now().millisecondsSinceEpoch,
+                  },
+                  conflictAlgorithm: ConflictAlgorithm.ignore,
+                );
+              }
+            }
+          } catch (_) {
+            // coluna folder_path pode não existir dependendo do estado do
+            // banco durante o desenvolvimento — segue sem migrar dado antigo
+          }
+        }
       },
     );
   }
@@ -70,14 +106,12 @@ class LibraryDatabase {
 
   Future<void> updateSettings({
     bool? enabled,
-    String? folderPath,
     bool? showDuplicateIndicator,
     String? autoScanFrequency,
   }) async {
     final db = await database;
     final values = <String, Object?>{};
     if (enabled != null) values['enabled'] = enabled ? 1 : 0;
-    if (folderPath != null) values['folder_path'] = folderPath;
     if (showDuplicateIndicator != null) {
       values['show_duplicate_indicator'] = showDuplicateIndicator ? 1 : 0;
     }
@@ -99,6 +133,37 @@ class LibraryDatabase {
       },
       where: 'id = 1',
     );
+  }
+
+  // ---------------------------------------------------------------------
+  // Pastas da biblioteca (até maxFolders)
+  // ---------------------------------------------------------------------
+
+  Future<List<String>> getFolders() async {
+    final db = await database;
+    final rows = await db.query('library_folders', orderBy: 'added_at ASC');
+    return rows.map((r) => r['path'] as String).toList();
+  }
+
+  /// Retorna false se já atingiu o limite de [maxFolders] ou se a pasta
+  /// já estava na lista — o controller decide o que fazer com isso.
+  Future<bool> addFolder(String path) async {
+    final db = await database;
+    final current = await getFolders();
+    if (current.contains(path)) return false;
+    if (current.length >= maxFolders) return false;
+
+    await db.insert(
+      'library_folders',
+      {'path': path, 'added_at': DateTime.now().millisecondsSinceEpoch},
+      conflictAlgorithm: ConflictAlgorithm.ignore,
+    );
+    return true;
+  }
+
+  Future<void> removeFolder(String path) async {
+    final db = await database;
+    await db.delete('library_folders', where: 'path = ?', whereArgs: [path]);
   }
 
   // ---------------------------------------------------------------------
@@ -131,8 +196,6 @@ class LibraryDatabase {
     );
   }
 
-  /// Remove do cache entradas cujo arquivo não existe mais no disco.
-  /// Retorna quantas foram removidas ("Cleanup Missing Files" do print).
   Future<int> removeMissingPaths(Set<String> stillExistingPaths) async {
     final db = await database;
     final cached = await getScannedPaths();
@@ -147,8 +210,6 @@ class LibraryDatabase {
     return missing.length;
   }
 
-  /// Apaga todo o cache ("Clear Library" do print) — não mexe nos arquivos
-  /// reais, só zera o que o app guardou sobre eles.
   Future<void> clearLibrary() async {
     final db = await database;
     await db.delete('scanned_files');

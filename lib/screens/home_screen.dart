@@ -1,13 +1,14 @@
 import 'package:flutter/material.dart';
+import 'package:glopplayer/provider/playlist_provider.dart';
+import 'package:glopplayer/services/song_delete_service.dart';
 import 'package:on_audio_query_forked/on_audio_query.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
 import 'package:glopplayer/components/songs_list.dart';
-import 'package:glopplayer/screens/pages/album_songs_screen.dart';
 
 import '../services/music_library_service.dart';
 import '../services/player_controller.dart';
-import 'player_screen.dart';
+import 'pages/player_screen.dart';
 
 enum _LoadState { checking, needsPermission, loadingLibrary, ready, error }
 
@@ -24,7 +25,6 @@ class _HomeScreenState extends State<HomeScreen> {
   _LoadState _state = _LoadState.checking;
   String? _errorMessage;
   List<SongModel> _songs = [];
-  List<AlbumModel> _albums = [];
 
   @override
   void initState() {
@@ -118,7 +118,6 @@ class _HomeScreenState extends State<HomeScreen> {
       if (!mounted) return;
       setState(() {
         _songs = results[0] as List<SongModel>;
-        _albums = results[1] as List<AlbumModel>;
         _state = _LoadState.ready;
       });
     } catch (e) {
@@ -138,13 +137,44 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  void _openAlbum(AlbumModel album) {
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => AlbumSongsScreen(album: album, library: _library),
-      ),
-    );
+  Future<void> _deleteSongs(List<SongModel> songsToDelete) async {
+    bool success = false;
+
+    try {
+      success = await SongDeleteService.deleteSongs(
+        songsToDelete.map((s) => s.id).toList(),
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Erro ao excluir: $e')),
+        );
+      }
+      return;
+    }
+
+    if (!success) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Exclusão cancelada ou não concluída.'),
+          ),
+        );
+      }
+      return;
+    }
+
+    final deletedIds = songsToDelete.map((s) => s.id).toSet();
+
+    final playlistProvider = context.read<PlaylistProvider>();
+    for (final id in deletedIds) {
+      await playlistProvider.removeSongFromAllPlaylists(id);
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _songs.removeWhere((s) => deletedIds.contains(s.id));
+    });
   }
 
   @override
@@ -225,9 +255,9 @@ class _HomeScreenState extends State<HomeScreen> {
             ],
           ),
           body: MusicListItems(
-            songs: _songs,
-            onSongTap: _openPlayer,
-          ),
+              songs: _songs,
+              onSongTap: _openPlayer,
+              onDeleteSongs: _deleteSongs),
         );
 
       case _LoadState.needsPermission:

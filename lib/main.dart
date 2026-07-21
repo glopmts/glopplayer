@@ -1,3 +1,4 @@
+import 'package:app_links/app_links.dart';
 import 'package:audio_service/audio_service.dart';
 import 'package:flutter/material.dart';
 import 'package:glopplayer/controllers/library_controller.dart';
@@ -12,6 +13,7 @@ import 'services/audio_player_handler.dart';
 import 'services/player_controller.dart';
 
 late MyAudioHandler audioHandler;
+late PlayerController playerController;
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -26,7 +28,27 @@ Future<void> main() async {
     ),
   );
 
+  playerController = PlayerController(audioHandler); // <- FALTAVA ISSO
+
   runApp(const MyApp());
+  playerController.restoreLastSession();
+  _setupExternalAudioIntentListener();
+}
+
+void _setupExternalAudioIntentListener() {
+  final appLinks = AppLinks();
+
+  appLinks.uriLinkStream.listen((uri) {
+    _handleReceivedUri(uri);
+  }, onError: (err) => debugPrint('Erro na intent de áudio: $err'));
+
+  appLinks.getInitialLink().then((uri) {
+    if (uri != null) _handleReceivedUri(uri);
+  });
+}
+
+void _handleReceivedUri(Uri uri) {
+  playerController.playExternalFile(uri.toString());
 }
 
 class MyApp extends StatelessWidget {
@@ -36,7 +58,8 @@ class MyApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MultiProvider(
       providers: [
-        ChangeNotifierProvider(create: (_) => PlayerController(audioHandler)),
+        ChangeNotifierProvider.value(
+            value: playerController), // única linha do PlayerController
         ChangeNotifierProvider(
             create: (_) => PlaylistProvider()..loadPlaylists()),
         ChangeNotifierProvider(create: (_) => ThemeProvider()),

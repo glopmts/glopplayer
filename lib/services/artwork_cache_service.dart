@@ -9,42 +9,43 @@ class ArtworkCacheService {
 
   final OnAudioQuery _audioQuery = OnAudioQuery();
 
-  // Cache em memória: evita re-consultar o SQLite a cada rebuild do widget.
-  final Map<int, String?> _memCache = {};
-  // Evita disparar duas buscas concorrentes pro mesmo id (comum durante scroll rápido).
-  final Map<int, Future<String?>> _inFlight = {};
+  // Chave composta: "type-id", pra não confundir música com álbum/artista
+  final Map<String, String?> _memCache = {};
+  final Map<String, Future<String?>> _inFlight = {};
 
-  Future<String?> getArtworkPath(int songId) {
-    if (_memCache.containsKey(songId)) {
-      return Future.value(_memCache[songId]);
+  Future<String?> getArtworkPath(int id, ArtworkType type) {
+    final key = '${type.name}-$id';
+
+    if (_memCache.containsKey(key)) {
+      return Future.value(_memCache[key]);
     }
-    if (_inFlight.containsKey(songId)) {
-      return _inFlight[songId]!;
+    if (_inFlight.containsKey(key)) {
+      return _inFlight[key]!;
     }
 
-    final future = _resolve(songId);
-    _inFlight[songId] = future;
-    future.whenComplete(() => _inFlight.remove(songId));
+    final future = _resolve(id, type, key);
+    _inFlight[key] = future;
+    future.whenComplete(() => _inFlight.remove(key));
     return future;
   }
 
-  Future<String?> _resolve(int songId) async {
-    final cachedPath = await SongsDb.getArtworkPath(songId);
+  Future<String?> _resolve(int id, ArtworkType type, String key) async {
+    final cachedPath = await SongsDb.getArtworkPath(key);
     if (cachedPath != null && await File(cachedPath).exists()) {
-      _memCache[songId] = cachedPath;
+      _memCache[key] = cachedPath;
       return cachedPath;
     }
 
     final bytes = await _audioQuery.queryArtwork(
-      songId,
-      ArtworkType.AUDIO,
+      id,
+      type, // <- agora usa o tipo correto passado pelo chamador
       format: ArtworkFormat.JPEG,
-      size: 300, // já pede em resolução menor -> decode nativo mais leve
+      size: 300,
       quality: 80,
     );
 
     if (bytes == null || bytes.isEmpty) {
-      _memCache[songId] = null;
+      _memCache[key] = null;
       return null;
     }
 
@@ -54,11 +55,13 @@ class ArtworkCacheService {
       await artworkDir.create(recursive: true);
     }
 
-    final file = File('${artworkDir.path}/$songId.jpg');
+    // Nome de arquivo também precisa incluir o tipo, senão música e álbum
+    // com mesmo id numérico sobrescrevem o arquivo um do outro
+    final file = File('${artworkDir.path}/${type.name}_$id.jpg');
     await file.writeAsBytes(bytes, flush: true);
-    await SongsDb.saveArtworkPath(songId, file.path);
+    await SongsDb.saveArtworkPath(key, file.path);
 
-    _memCache[songId] = file.path;
+    _memCache[key] = file.path;
     return file.path;
   }
 

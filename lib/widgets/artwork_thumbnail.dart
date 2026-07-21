@@ -58,8 +58,10 @@ class _ArtworkThumbnailState extends State<ArtworkThumbnail>
     final key = '${widget.type}-${widget.id}';
 
     // Primeiro, tenta buscar do cache de arquivos
-    final filePath =
-        await ArtworkCacheService.instance.getArtworkPath(widget.id);
+    final filePath = await ArtworkCacheService.instance.getArtworkPath(
+      widget.id,
+      widget.type, // <- agora passa o tipo também
+    );
     if (filePath != null) {
       try {
         final file = File(filePath);

@@ -1,3 +1,4 @@
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:glopplayer/controllers/library_controller.dart';
 import 'package:provider/provider.dart';
@@ -43,12 +44,7 @@ class LocalLibraryScreen extends StatelessWidget {
                 onChanged: controller.setEnabled,
               ),
               const _TileDivider(),
-              _NavTile(
-                icon: Icons.folder_outlined,
-                title: 'Library Folder',
-                subtitle: controller.folderPath,
-                onTap: () => _pickFolder(context, controller),
-              ),
+              _FolderListSection(controller: controller),
               const _TileDivider(),
               _SwitchTile(
                 icon: Icons.content_copy_outlined,
@@ -126,37 +122,6 @@ class LocalLibraryScreen extends StatelessWidget {
     );
   }
 
-  Future<void> _pickFolder(
-      BuildContext context, LibraryController controller) async {
-    // TODO: plugar um seletor de pasta real, ex: file_picker
-    // (FilePicker.platform.getDirectoryPath()) ou Storage Access Framework.
-    // Por enquanto, deixa o fluxo pronto pra receber o path escolhido:
-    final path = await showDialog<String>(
-      context: context,
-      builder: (context) {
-        final controllerText =
-            TextEditingController(text: controller.folderPath);
-        return AlertDialog(
-          title: const Text('Pasta da biblioteca'),
-          content: TextField(controller: controllerText),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Cancelar'),
-            ),
-            TextButton(
-              onPressed: () => Navigator.pop(context, controllerText.text),
-              child: const Text('Salvar'),
-            ),
-          ],
-        );
-      },
-    );
-    if (path != null && path.trim().isNotEmpty) {
-      await controller.setFolderPath(path.trim());
-    }
-  }
-
   Future<void> _openAutoScanMenu(
       BuildContext context, LibraryController controller) async {
     final cs = Theme.of(context).colorScheme;
@@ -208,6 +173,152 @@ class LocalLibraryScreen extends StatelessWidget {
     if (confirmed == true) {
       await controller.clearLibrary();
     }
+  }
+}
+
+/// Bloco de "Library Folders" — mostra até 3 pastas com opção de remover
+/// cada uma, e um botão pra adicionar (abre o seletor nativo de pasta).
+class _FolderListSection extends StatelessWidget {
+  final LibraryController controller;
+  const _FolderListSection({required this.controller});
+
+  Future<void> _pickFolder(BuildContext context) async {
+    if (!controller.canAddMoreFolders) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Máximo de ${controller.maxFolders} pastas atingido'),
+        ),
+      );
+      return;
+    }
+
+    final path = await FilePicker.platform.getDirectoryPath();
+    if (path == null) return; // usuário cancelou o seletor
+
+    final result = await controller.addFolder(path);
+    if (!context.mounted) return;
+
+    switch (result) {
+      case AddFolderResult.success:
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+              content: Text('Pasta adicionada e biblioteca atualizada')),
+        );
+        break;
+      case AddFolderResult.alreadyExists:
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Essa pasta já está na lista')),
+        );
+        break;
+      case AddFolderResult.limitReached:
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Máximo de ${controller.maxFolders} pastas atingido'),
+          ),
+        );
+        break;
+    }
+  }
+
+  Future<void> _confirmRemove(BuildContext context, String path) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Remover pasta?'),
+        content: Text(
+          'As músicas de "$path" deixarão de aparecer na biblioteca.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancelar'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Remover'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) {
+      await controller.removeFolder(path);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.folder_outlined, color: cs.onSurface, size: 24),
+              const SizedBox(width: 20),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Library Folders',
+                      style: theme.textTheme.titleMedium?.copyWith(
+                        color: cs.onSurface,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                    Text(
+                      controller.folders.isEmpty
+                          ? 'Biblioteca inteira (nenhuma pasta específica)'
+                          : '${controller.folders.length}/${controller.maxFolders} pastas selecionadas',
+                      style: theme.textTheme.bodySmall
+                          ?.copyWith(color: cs.onSurfaceVariant),
+                    ),
+                  ],
+                ),
+              ),
+              IconButton(
+                icon: Icon(Icons.add_circle_outline, color: cs.primary),
+                tooltip: 'Adicionar pasta',
+                onPressed: controller.canAddMoreFolders
+                    ? () => _pickFolder(context)
+                    : null,
+              ),
+            ],
+          ),
+          if (controller.folders.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            for (final folder in controller.folders)
+              Padding(
+                padding: const EdgeInsets.only(left: 44, top: 4),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        folder,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.bodySmall
+                            ?.copyWith(color: cs.onSurfaceVariant),
+                      ),
+                    ),
+                    IconButton(
+                      icon: Icon(Icons.close,
+                          size: 18, color: cs.onSurfaceVariant),
+                      onPressed: () => _confirmRemove(context, folder),
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(),
+                    ),
+                  ],
+                ),
+              ),
+          ],
+        ],
+      ),
+    );
   }
 }
 

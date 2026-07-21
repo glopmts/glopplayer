@@ -1,8 +1,8 @@
 import 'package:flutter/foundation.dart';
-import 'package:glopplayer/services/library_scan_notifications_service.dart';
 import 'package:on_audio_query_forked/on_audio_query.dart';
 
 import '../db/library_database.dart'; // ajuste o caminho conforme seu projeto
+import '../services/library_scan_notifications_service.dart';
 import '../services/music_library_service.dart';
 
 enum AutoScanFrequency { off, daily, weekly }
@@ -28,9 +28,9 @@ extension AutoScanFrequencyX on AutoScanFrequency {
   }
 }
 
-/// Estado + ações da tela "Local Library": liga o cache SQLite
-/// (LibraryDatabase), a notificação de progresso e o scan de verdade
-/// (via MusicLibraryService / on_audio_query).
+/// Motivo pelo qual addFolder() falhou, pra UI mostrar a mensagem certa.
+enum AddFolderResult { success, alreadyExists, limitReached }
+
 class LibraryController extends ChangeNotifier {
   final LibraryDatabase _db = LibraryDatabase.instance;
   final MusicLibraryService _library = MusicLibraryService();
@@ -39,11 +39,11 @@ class LibraryController extends ChangeNotifier {
       LibraryScanNotificationService.instance;
 
   bool _enabled = true;
-  String _folderPath = '/storage/emulated/0/Music';
   bool _showDuplicateIndicator = true;
   AutoScanFrequency _autoScanFrequency = AutoScanFrequency.daily;
   int _trackCount = 0;
   DateTime? _lastScannedAt;
+  List<String> _folders = [];
 
   bool _isScanning = false;
   int _scanCurrent = 0;
@@ -51,7 +51,6 @@ class LibraryController extends ChangeNotifier {
   bool _isLoaded = false;
 
   bool get enabled => _enabled;
-  String get folderPath => _folderPath;
   bool get showDuplicateIndicator => _showDuplicateIndicator;
   AutoScanFrequency get autoScanFrequency => _autoScanFrequency;
   int get trackCount => _trackCount;
@@ -61,6 +60,14 @@ class LibraryController extends ChangeNotifier {
   int get scanTotal => _scanTotal;
   bool get isLoaded => _isLoaded;
 
+  List<String> get folders => List.unmodifiable(_folders);
+  int get maxFolders => LibraryDatabase.maxFolders;
+  bool get canAddMoreFolders => _folders.length < maxFolders;
+
+  /// Exposto pra outras telas (lista de músicas, álbuns) filtrarem seus
+  /// próprios fetches sem duplicar a lógica de "pastas configuradas".
+  MusicLibraryService get library => _library;
+
   LibraryController() {
     _load();
   }
@@ -68,7 +75,6 @@ class LibraryController extends ChangeNotifier {
   Future<void> _load() async {
     final row = await _db.getSettings();
     _enabled = (row['enabled'] as int) == 1;
-    _folderPath = row['folder_path'] as String;
     _showDuplicateIndicator = (row['show_duplicate_indicator'] as int) == 1;
     _autoScanFrequency =
         AutoScanFrequencyX.fromStorage(row['auto_scan_frequency'] as String);
@@ -77,6 +83,7 @@ class LibraryController extends ChangeNotifier {
     _lastScannedAt = lastScanned != null
         ? DateTime.fromMillisecondsSinceEpoch(lastScanned)
         : null;
+    _folders = await _db.getFolders();
     _isLoaded = true;
     notifyListeners();
   }
@@ -85,12 +92,6 @@ class LibraryController extends ChangeNotifier {
     _enabled = value;
     notifyListeners();
     await _db.updateSettings(enabled: value);
-  }
-
-  Future<void> setFolderPath(String path) async {
-    _folderPath = path;
-    notifyListeners();
-    await _db.updateSettings(folderPath: path);
   }
 
   Future<void> setShowDuplicateIndicator(bool value) async {
@@ -105,11 +106,29 @@ class LibraryController extends ChangeNotifier {
     await _db.updateSettings(autoScanFrequency: freq.storageValue);
   }
 
-  /// Scan normal — só olha o que mudou desde o último scan (usa o cache
-  /// de `scanned_files` pra pular arquivos já conhecidos).
-  Future<void> scanLibrary() => _runScan(forceFull: false);
+  /// Adiciona uma pasta (máx. 3). Dispara um rescan ao final pra já
+  /// refletir as músicas da nova pasta na tela.
+  Future<AddFolderResult> addFolder(String path) async {
+    if (_folders.contains(path)) return AddFolderResult.alreadyExists;
+    if (_folders.length >= maxFolders) return AddFolderResult.limitReached;
 
-  /// Rescan completo, ignorando cache de arquivos já vistos.
+    final added = await _db.addFolder(path);
+    if (!added) return AddFolderResult.alreadyExists;
+
+    _folders = await _db.getFolders();
+    notifyListeners();
+    await scanLibrary();
+    return AddFolderResult.success;
+  }
+
+  Future<void> removeFolder(String path) async {
+    await _db.removeFolder(path);
+    _folders = await _db.getFolders();
+    notifyListeners();
+    await scanLibrary();
+  }
+
+  Future<void> scanLibrary() => _runScan(forceFull: false);
   Future<void> forceFullScan() => _runScan(forceFull: true);
 
   Future<void> _runScan({required bool forceFull}) async {
@@ -122,9 +141,8 @@ class LibraryController extends ChangeNotifier {
     await _notifications.showIndeterminate();
 
     try {
-      // TODO: troque por como seu MusicLibraryService/on_audio_query real
-      // lista os arquivos — aqui uso querySongs() como exemplo direto.
-      final songs = await _audioQuery.querySongs();
+      // Já respeita as pastas configuradas (vazio = biblioteca inteira).
+      final songs = await _library.fetchAllSongs(restrictToFolders: _folders);
       _scanTotal = songs.length;
 
       final alreadyScanned =
@@ -148,7 +166,6 @@ class LibraryController extends ChangeNotifier {
         _scanCurrent = processed;
         notifyListeners();
 
-        // Não satura a notificação com updates demais.
         if (processed % 10 == 0 || processed == _scanTotal) {
           await _notifications.updateProgress(
             current: processed,

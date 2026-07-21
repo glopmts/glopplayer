@@ -1,19 +1,24 @@
 import 'package:flutter/material.dart';
+import 'package:glopplayer/components/create_playlist_dialog.dart';
 import 'package:glopplayer/provider/playlist_provider.dart';
 import 'package:provider/provider.dart';
 import 'package:on_audio_query_forked/on_audio_query.dart';
 
 class AddToPlaylistDialog extends StatelessWidget {
-  final SongModel song;
+  final List<SongModel> songs;
 
-  const AddToPlaylistDialog({super.key, required this.song});
+  const AddToPlaylistDialog({super.key, required this.songs});
 
   @override
   Widget build(BuildContext context) {
     final provider = context.watch<PlaylistProvider>();
 
     return AlertDialog(
-      title: const Text('Adicionar à Playlist'),
+      title: Text(
+        songs.length == 1
+            ? 'Adicionar à Playlist'
+            : 'Adicionar ${songs.length} músicas',
+      ),
       content: SizedBox(
         width: double.maxFinite,
         child: provider.playlists.isEmpty
@@ -25,27 +30,36 @@ class AddToPlaylistDialog extends StatelessWidget {
                 itemCount: provider.playlists.length,
                 itemBuilder: (context, index) {
                   final playlist = provider.playlists[index];
-                  final isInPlaylist =
-                      playlist.songs.any((s) => s.songId == song.id);
+                  final missing = songs
+                      .where(
+                          (s) => !playlist.songs.any((ps) => ps.songId == s.id))
+                      .toList();
+                  final allInPlaylist = missing.isEmpty;
 
                   return ListTile(
                     leading: Icon(
-                      isInPlaylist ? Icons.check_circle : Icons.playlist_add,
-                      color: isInPlaylist ? Colors.green : null,
+                      allInPlaylist ? Icons.check_circle : Icons.playlist_add,
+                      color: allInPlaylist ? Colors.green : null,
                     ),
                     title: Text(playlist.name),
                     subtitle: Text('${playlist.songs.length} músicas'),
-                    onTap: isInPlaylist
+                    onTap: allInPlaylist
                         ? null
                         : () async {
-                            await context
-                                .read<PlaylistProvider>()
-                                .addSongToPlaylist(playlist.id, song);
+                            for (final song in missing) {
+                              await context
+                                  .read<PlaylistProvider>()
+                                  .addSongToPlaylist(playlist.id, song);
+                            }
                             if (context.mounted) {
+                              Navigator.pop(context);
                               ScaffoldMessenger.of(context).showSnackBar(
                                 SnackBar(
                                   content: Text(
-                                      '"${song.title}" adicionada à playlist'),
+                                    missing.length == 1
+                                        ? '"${missing.first.title}" adicionada à playlist'
+                                        : '${missing.length} músicas adicionadas à playlist',
+                                  ),
                                 ),
                               );
                             }
@@ -62,15 +76,16 @@ class AddToPlaylistDialog extends StatelessWidget {
         TextButton(
           onPressed: () {
             Navigator.pop(context);
-            _showCreatePlaylistDialog(context);
+            Future.microtask(() {
+              showDialog(
+                context: context,
+                builder: (_) => const CreatePlaylistDialog(),
+              );
+            });
           },
           child: const Text('Criar Nova'),
         ),
       ],
     );
-  }
-
-  void _showCreatePlaylistDialog(BuildContext context) {
-    // Implementar dialog de criação de playlist
   }
 }

@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:glopplayer/screens/player_screen.dart';
+import 'package:glopplayer/screens/pages/player_screen.dart';
 import 'package:glopplayer/services/music_library_service.dart';
 import 'package:glopplayer/services/player_controller.dart';
 import 'package:glopplayer/utils/format_utils.dart';
@@ -300,47 +300,85 @@ class _AlbumSongsScreenState extends State<AlbumSongsScreen> {
                 ),
                 const Divider(height: 1),
                 Expanded(
-                  child: ListView.builder(
-                    itemCount: _songs.length,
-                    itemBuilder: (context, index) {
-                      final song = _songs[index];
-                      final showDate = _sortBy == _SongSort.dateAddedNewest ||
-                          _sortBy == _SongSort.dateAddedOldest;
-                      return ListTile(
-                        leading: Text(
-                          '${index + 1}',
-                          style: TextStyle(
-                            color: Colors.grey[600],
-                            fontWeight: FontWeight.w500,
-                          ),
-                        ),
-                        title: Text(
-                          song.title,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        subtitle: Text(
-                          showDate
-                              ? '${song.artist ?? "Artista desconhecido"} • ${_formatDateAdded(song)}'
-                              : song.artist ?? 'Artista desconhecido',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        trailing: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            if (song.duration != null)
-                              Text(formatDuration(
-                                  Duration(milliseconds: song.duration!))),
-                            IconButton(
-                              icon: const Icon(Icons.more_vert, size: 20),
-                              onPressed: () => _showSongOptions(song, index),
-                              padding: EdgeInsets.zero,
-                              constraints: const BoxConstraints(),
+                  child: Consumer<PlayerController>(
+                    builder: (context, playerController, _) {
+                      return ListView.builder(
+                        itemCount: _songs.length,
+                        itemBuilder: (context, index) {
+                          final song = _songs[index];
+                          final isCurrent =
+                              playerController.isCurrentSong(song);
+                          final isPlaying =
+                              playerController.isCurrentlyPlaying(song);
+                          final showDate =
+                              _sortBy == _SongSort.dateAddedNewest ||
+                                  _sortBy == _SongSort.dateAddedOldest;
+
+                          return ListTile(
+                            tileColor: isCurrent
+                                ? Theme.of(context)
+                                    .colorScheme
+                                    .primary
+                                    .withOpacity(0.08)
+                                : null,
+                            leading: Opacity(
+                              opacity: isCurrent ? 0.6 : 1.0,
+                              child: ArtworkThumbnail(
+                                width: 48,
+                                height: 48,
+                                id: song.id,
+                                type: ArtworkType.AUDIO,
+                                borderRadius: 8,
+                                placeholderIcon: Icons.album,
+                              ),
                             ),
-                          ],
-                        ),
-                        onTap: () => _openPlayer(index),
+                            title: Text(
+                              song.title,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                color: isCurrent
+                                    ? Theme.of(context).colorScheme.primary
+                                    : null,
+                                fontWeight: isCurrent ? FontWeight.bold : null,
+                              ),
+                            ),
+                            subtitle: Text(
+                              showDate
+                                  ? '${song.artist ?? "Artista desconhecido"} • ${_formatDateAdded(song)}'
+                                  : song.artist ?? 'Artista desconhecido',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            trailing: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                if (isPlaying)
+                                  const Padding(
+                                    padding: EdgeInsets.only(right: 4),
+                                    child: Icon(Icons.equalizer,
+                                        size: 18, color: Colors.amber),
+                                  )
+                                else if (isCurrent)
+                                  const Padding(
+                                    padding: EdgeInsets.only(right: 4),
+                                    child: Icon(Icons.pause, size: 18),
+                                  ),
+                                if (song.duration != null)
+                                  Text(formatDuration(
+                                      Duration(milliseconds: song.duration!))),
+                                IconButton(
+                                  icon: const Icon(Icons.more_vert, size: 20),
+                                  onPressed: () =>
+                                      _showSongOptions(song, index),
+                                  padding: EdgeInsets.zero,
+                                  constraints: const BoxConstraints(),
+                                ),
+                              ],
+                            ),
+                            onTap: () => _openPlayer(index),
+                          );
+                        },
                       );
                     },
                   ),

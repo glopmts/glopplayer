@@ -18,7 +18,7 @@ class PlaylistProvider extends ChangeNotifier {
   Future<void> createPlaylist(String name) async {
     if (name.trim().isEmpty) return;
 
-    final id = await PlaylistDB.createPlaylist(name.trim());
+    await PlaylistDB.createPlaylist(name.trim());
     await loadPlaylists();
   }
 
@@ -57,6 +57,26 @@ class PlaylistProvider extends ChangeNotifier {
 
   void clearCurrentPlaylist() {
     _currentPlaylist = null;
+    notifyListeners();
+  }
+
+  Future<void> removeSongFromAllPlaylists(int songId) async {
+    final affected = _playlists
+        .where((p) => p.songs.any((s) => s.songId == songId))
+        .toList();
+
+    for (final playlist in affected) {
+      await PlaylistDB.removeSongFromPlaylist(playlist.id, songId);
+    }
+
+    if (affected.isEmpty) return;
+
+    await loadPlaylists();
+
+    if (_currentPlaylist != null &&
+        affected.any((p) => p.id == _currentPlaylist!.id)) {
+      _currentPlaylist = await PlaylistDB.getPlaylist(_currentPlaylist!.id);
+    }
     notifyListeners();
   }
 
