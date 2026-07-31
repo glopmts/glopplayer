@@ -8,6 +8,7 @@ import 'package:glopplayer/components/songs_list.dart';
 
 import '../services/music_library_service.dart';
 import '../services/player_controller.dart';
+import '../widgets/music_widget_compact.dart';
 import 'pages/player_screen.dart';
 
 enum _LoadState { checking, needsPermission, loadingLibrary, ready, error }
@@ -254,39 +255,23 @@ class _HomeScreenState extends State<HomeScreen> {
               // ),
             ],
           ),
-          body: MusicListItems(
-              songs: _songs,
-              onSongTap: _openPlayer,
-              onDeleteSongs: _deleteSongs),
-        );
-
-      case _LoadState.needsPermission:
-        return Scaffold(
-          body: Center(
-            child: Padding(
-              padding: const EdgeInsets.all(24),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Icon(Icons.lock_outline, size: 64, color: Colors.grey),
-                  const SizedBox(height: 16),
-                  const Text(
-                    'Precisamos de permissão para acessar as músicas do aparelho.',
-                    textAlign: TextAlign.center,
-                  ),
-                  const SizedBox(height: 16),
-                  ElevatedButton(
-                    onPressed: _requestPermission,
-                    child: const Text('Conceder permissão'),
-                  ),
-                  const SizedBox(height: 8),
-                  TextButton(
-                    onPressed: () => openAppSettings(),
-                    child: const Text('Abrir configurações do app'),
-                  ),
-                ],
+          body: Column(
+            children: [
+              const Padding(
+                padding: EdgeInsets.fromLTRB(16, 16, 16, 0),
+                child: MusicWidgetCompact(),
               ),
-            ),
+              Expanded(
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: MusicListItems(
+                    songs: _songs,
+                    onSongTap: _openPlayer,
+                    onDeleteSongs: _deleteSongs,
+                  ),
+                ),
+              ),
+            ],
           ),
         );
     }
