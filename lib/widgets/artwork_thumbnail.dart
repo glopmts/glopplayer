@@ -1,11 +1,10 @@
+import 'dart:collection';
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:on_audio_query_forked/on_audio_query.dart';
 import '../services/artwork_cache_service.dart';
 
-/// Mostra a capa de uma música, álbum ou playlist preenchendo todo o espaço
-/// disponível (BoxFit.cover), com suporte a cache e otimizações de performance.
 class ArtworkThumbnail extends StatefulWidget {
   final int id;
   final ArtworkType type;
@@ -26,69 +25,100 @@ class ArtworkThumbnail extends StatefulWidget {
     this.fit = BoxFit.cover,
   });
 
+  // ---- Cache compartilhado (LRU simples) ----------------------------
+  static const int _maxCacheEntries = 200;
+  static final LinkedHashMap<String, Uint8List?> _byteCache = LinkedHashMap();
+  static final Map<String, Future<Uint8List?>> _inFlight = {};
+
+  static String _keyFor(int id, ArtworkType type) => '$type-$id';
+
+  /// Busca os bytes da capa reaproveitando o mesmo cache usado pelos
+  /// widgets `ArtworkThumbnail` na tela — evita duplicar I/O quando você
+  /// precisa da mesma capa em outro lugar (ex: fundo desfocado do player).
+  static Future<Uint8List?> fetchBytes(
+    int id,
+    ArtworkType type, {
+    int quality = 85,
+    int size = 400,
+  }) {
+    final key = _keyFor(id, type);
+
+    if (_byteCache.containsKey(key)) {
+      final bytes = _byteCache.remove(key);
+      _byteCache[key] = bytes;
+      return Future.value(bytes);
+    }
+    if (_inFlight.containsKey(key)) return _inFlight[key]!;
+
+    final future = _fetchAndCache(id, type, key, quality: quality, size: size);
+    _inFlight[key] = future;
+    return future;
+  }
+
+  static Future<Uint8List?> _fetchAndCache(
+    int id,
+    ArtworkType type,
+    String key, {
+    required int quality,
+    required int size,
+  }) async {
+    Uint8List? bytes;
+    try {
+      final filePath =
+          await ArtworkCacheService.instance.getArtworkPath(id, type);
+      if (filePath != null) {
+        final file = File(filePath);
+        if (await file.exists()) {
+          bytes = await file.readAsBytes();
+        }
+      }
+      bytes ??= await OnAudioQuery().queryArtwork(
+        id,
+        type,
+        format: ArtworkFormat.JPEG,
+        size: size,
+        quality: quality,
+      );
+    } catch (_) {
+      bytes = null;
+    }
+
+    _byteCache[key] = bytes;
+    if (_byteCache.length > _maxCacheEntries) {
+      _byteCache.remove(_byteCache.keys.first);
+    }
+    _inFlight.remove(key);
+    return bytes;
+  }
+
   @override
   State<ArtworkThumbnail> createState() => _ArtworkThumbnailState();
 }
 
-class _ArtworkThumbnailState extends State<ArtworkThumbnail>
-    with AutomaticKeepAliveClientMixin {
+class _ArtworkThumbnailState extends State<ArtworkThumbnail> {
   late Future<Uint8List?> _artworkFuture;
-
-  @override
-  bool get wantKeepAlive => true;
 
   @override
   void initState() {
     super.initState();
-    _artworkFuture = _getCachedArtwork();
+    _artworkFuture = _load();
   }
 
   @override
   void didUpdateWidget(covariant ArtworkThumbnail oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.id != widget.id || oldWidget.type != widget.type) {
-      _artworkFuture = _getCachedArtwork();
+      _artworkFuture = _load();
     }
   }
 
-  // Cache estático para evitar múltiplas requisições
-  static final Map<String, Future<Uint8List?>> _cache = {};
-
-  Future<Uint8List?> _getCachedArtwork() async {
-    final key = '${widget.type}-${widget.id}';
-
-    // Primeiro, tenta buscar do cache de arquivos
-    final filePath = await ArtworkCacheService.instance.getArtworkPath(
-      widget.id,
-      widget.type, // <- agora passa o tipo também
-    );
-    if (filePath != null) {
-      try {
-        final file = File(filePath);
-        if (await file.exists()) {
-          final bytes = await file.readAsBytes();
-          return bytes;
-        }
-      } catch (_) {
-        // Fallback para queryArtwork
-      }
-    }
-
-    // Se não encontrou no cache de arquivos, busca via OnAudioQuery
-    if (!_cache.containsKey(key)) {
-      _cache[key] = OnAudioQuery().queryArtwork(
+  Future<Uint8List?> _load() => ArtworkThumbnail.fetchBytes(
         widget.id,
         widget.type,
-        format: ArtworkFormat.JPEG,
         size: _getArtworkSize(),
-        quality: 85,
       );
-    }
-    return _cache[key]!;
-  }
 
   int _getArtworkSize() {
-    // Ajusta o tamanho da arte baseado nas dimensões solicitadas
     final maxDimension = widget.width ?? widget.height ?? 400;
     if (maxDimension <= 200) return 200;
     if (maxDimension <= 400) return 400;
@@ -98,7 +128,6 @@ class _ArtworkThumbnailState extends State<ArtworkThumbnail>
 
   @override
   Widget build(BuildContext context) {
-    super.build(context);
     final pixelSize = _getPixelSize();
 
     return ClipRRect(
@@ -110,15 +139,12 @@ class _ArtworkThumbnailState extends State<ArtworkThumbnail>
         child: FutureBuilder<Uint8List?>(
           future: _artworkFuture,
           builder: (context, snapshot) {
-            // Tratamento de estados
             if (snapshot.connectionState == ConnectionState.waiting) {
               return _buildPlaceholder(context, isWaiting: true);
             }
-
             if (snapshot.hasError) {
               return _buildPlaceholder(context, error: snapshot.error);
             }
-
             final bytes = snapshot.data;
             if (bytes != null && bytes.isNotEmpty) {
               return Image.memory(
@@ -133,7 +159,6 @@ class _ArtworkThumbnailState extends State<ArtworkThumbnail>
                 errorBuilder: (_, __, ___) => _buildPlaceholder(context),
               );
             }
-
             return _buildPlaceholder(context);
           },
         ),
@@ -159,12 +184,14 @@ class _ArtworkThumbnailState extends State<ArtworkThumbnail>
       color: _getPlaceholderColor(context),
       alignment: Alignment.center,
       child: isWaiting
-          ? const SizedBox(
+          ? SizedBox(
               width: 24,
               height: 24,
               child: CircularProgressIndicator(
                 strokeWidth: 2,
-                valueColor: AlwaysStoppedAnimation<Color>(Colors.white54),
+                valueColor: AlwaysStoppedAnimation<Color>(
+                  Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
               ),
             )
           : Icon(
@@ -177,9 +204,8 @@ class _ArtworkThumbnailState extends State<ArtworkThumbnail>
 
   Color _getPlaceholderColor(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    // Se o tipo for PLAYLIST, usa uma cor diferente
     if (widget.type == ArtworkType.PLAYLIST) {
-      return scheme.surfaceContainerHighest.withOpacity(0.7);
+      return scheme.surfaceContainerHighest.withValues(alpha: 0.7);
     }
     return scheme.surfaceContainerHighest;
   }

@@ -67,7 +67,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   title: 'Banco de dados local',
                   subtitle: 'Ver tamanho e limpar dados salvos',
                   onTap: () => Navigator.pushNamed(
-                      context, '/pages/local_database_screen'),
+                      context, '/pages/cache_management_screen'),
                 ),
                 _SettingsTile(
                   icon: Icons.folder_open_outlined,

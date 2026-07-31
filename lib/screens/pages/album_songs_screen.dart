@@ -1,3 +1,6 @@
+import 'dart:async';
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:glopplayer/screens/pages/player_screen.dart';
 import 'package:glopplayer/services/music_library_service.dart';
@@ -66,10 +69,58 @@ class _AlbumSongsScreenState extends State<AlbumSongsScreen> {
   bool _loading = true;
   _SongSort _sortBy = _SongSort.track;
 
+  StreamSubscription<void>? _playlistCompletedSub;
+  bool _autoAdvanceHandled = false; // evita disparar 2x pro mesmo fim
+
   @override
   void initState() {
     super.initState();
     _load();
+
+    // O listener é registrado uma vez só — não depende de rebuild
+    final pc = context.read<PlayerController>();
+    _playlistCompletedSub = pc.playlistCompleted.listen((_) {
+      _handlePlaylistCompleted(pc);
+    });
+  }
+
+  @override
+  void dispose() {
+    _playlistCompletedSub?.cancel();
+    super.dispose();
+  }
+
+  void _handlePlaylistCompleted(PlayerController pc) {
+    if (_autoAdvanceHandled || _songs.isEmpty) return;
+
+    // Só reage se a playlist que terminou é a deste álbum (evita
+    // disparar caso o usuário tenha trocado pra outro álbum/playlist
+    // nesse meio-tempo, já que o PlayerController é global)
+    final currentIds = pc.playlist.map((s) => s.id).toList();
+    final thisAlbumIds = _songs.map((s) => s.id).toList();
+    if (!listEquals(currentIds, thisAlbumIds)) return;
+
+    // Confirma que estava mesmo na última faixa
+    if (pc.currentIndex != _songs.length - 1) return;
+
+    _autoAdvanceHandled = true;
+    _autoAdvanceToNextAlbum(pc);
+  }
+
+  Future<void> _autoAdvanceToNextAlbum(PlayerController pc) async {
+    final albums = await widget.library.fetchAllAlbums();
+    final currentAlbumIndex = albums.indexWhere((a) => a.id == widget.album.id);
+
+    if (currentAlbumIndex == -1 || currentAlbumIndex + 1 >= albums.length) {
+      return; // era o último álbum da lista, não faz nada
+    }
+
+    final nextAlbum = albums[currentAlbumIndex + 1];
+    final nextSongs = await widget.library.fetchSongsFromAlbum(nextAlbum.id);
+    if (nextSongs.isEmpty) return;
+
+    if (!mounted) return;
+    await pc.setPlaylist(nextSongs, initialIndex: 0);
   }
 
   Future<void> _load() async {
@@ -109,7 +160,11 @@ class _AlbumSongsScreenState extends State<AlbumSongsScreen> {
   }
 
   void _openPlayer(int index) {
-    context.read<PlayerController>().setPlaylist(_songs, initialIndex: index);
+    context.read<PlayerController>().playAlbum(
+          widget.album,
+          _songs,
+          initialIndex: index,
+        );
     Navigator.of(context).push(
       MaterialPageRoute(builder: (_) => const PlayerScreen()),
     );

@@ -12,6 +12,8 @@ class MyAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
   final OnAudioQuery _audioQuery = OnAudioQuery();
   final Map<int, Uri?> _artworkCache = {};
 
+  ConcatenatingAudioSource? _currentSource;
+
   AudioPlayer get player => _player;
 
   MyAudioHandler() {
@@ -24,6 +26,139 @@ class MyAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
       return Uri.file(path).toString();
     }
     return song.uri ?? '';
+  }
+
+  Future<void> setSongs(List<SongModel> songs, {int initialIndex = 0}) async {
+    final items = <MediaItem>[];
+    final sources = <AudioSource>[];
+
+    for (final song in songs) {
+      final cacheKey = song.albumId ?? song.id;
+      final cachedArt = _artworkCache[cacheKey];
+      final resolvedId = _resolveSongUri(song);
+
+      final item = MediaItem(
+        id: resolvedId,
+        title: song.title,
+        artist: song.artist ?? 'Artista desconhecido',
+        album: song.album ?? 'Álbum desconhecido',
+        duration: song.duration != null
+            ? Duration(milliseconds: song.duration!)
+            : null,
+        artUri: cachedArt,
+      );
+      items.add(item);
+      sources.add(AudioSource.uri(Uri.parse(item.id), tag: item));
+    }
+
+    queue.add(items);
+
+    final source = ConcatenatingAudioSource(children: sources);
+    try {
+      await _player.setAudioSource(source, initialIndex: initialIndex);
+      _currentSource = source; // NOVO — só guarda se deu certo
+    } catch (e) {
+      debugPrint('ERRO AO CARREGAR PLAYLIST: $e');
+      return;
+    }
+
+    if (items.isNotEmpty) {
+      mediaItem.add(items[initialIndex]);
+    }
+
+    _resolveArtworkInBackground(songs, items, initialIndex);
+  }
+
+  // NOVO — anexa músicas à playlist atual sem recriar o AudioSource
+  // (é isso que evita o corte/pausa na transição)
+  Future<void> appendSongs(List<SongModel> songs) async {
+    if (_currentSource == null || songs.isEmpty) return;
+
+    final newItems = <MediaItem>[];
+    final newSources = <AudioSource>[];
+
+    for (final song in songs) {
+      final cacheKey = song.albumId ?? song.id;
+      final cachedArt = _artworkCache[cacheKey];
+      final resolvedId = _resolveSongUri(song);
+
+      final item = MediaItem(
+        id: resolvedId,
+        title: song.title,
+        artist: song.artist ?? 'Artista desconhecido',
+        album: song.album ?? 'Álbum desconhecido',
+        duration: song.duration != null
+            ? Duration(milliseconds: song.duration!)
+            : null,
+        artUri: cachedArt,
+      );
+      newItems.add(item);
+      newSources.add(AudioSource.uri(Uri.parse(item.id), tag: item));
+    }
+
+    try {
+      await _currentSource!.addAll(newSources);
+    } catch (e) {
+      debugPrint('ERRO AO ANEXAR PRÓXIMO ÁLBUM: $e');
+      return;
+    }
+
+    var updatedQueue = List<MediaItem>.of(queue.value)..addAll(newItems);
+    final offset = updatedQueue.length - newItems.length;
+    queue.add(updatedQueue);
+
+    // NOVO — resolve a artwork da PRIMEIRA faixa do próximo álbum de forma
+    // bloqueante, pra garantir que ela já esteja pronta quando a troca
+    // de faixa acontecer (é essa faixa que vai aparecer na notificação
+    // primeiro; o resto do álbum pode resolver em background com calma)
+    if (songs.isNotEmpty) {
+      final firstSong = songs.first;
+      final cacheKey = firstSong.albumId ?? firstSong.id;
+      if (!_artworkCache.containsKey(cacheKey)) {
+        final artUri = await _artworkFileUri(firstSong);
+        if (artUri != null) {
+          final updatedFirst = updatedQueue[offset].copyWith(artUri: artUri);
+          updatedQueue = List.of(updatedQueue)..[offset] = updatedFirst;
+          queue.add(updatedQueue);
+
+          if (mediaItem.value?.id == updatedFirst.id) {
+            mediaItem.add(updatedFirst);
+          }
+        }
+      }
+    }
+
+    // Resto do álbum resolve em background, sem bloquear
+    _resolveArtworkForRange(songs, updatedQueue, offset);
+  }
+
+  // Refatorado a partir do _resolveArtworkInBackground original, agora
+  // aceita um offset pra funcionar tanto na carga inicial (offset 0)
+  // quanto no append (offset = tamanho da queue antes de anexar)
+  Future<void> _resolveArtworkForRange(
+    List<SongModel> songs,
+    List<MediaItem> fullQueueItems,
+    int offset,
+  ) async {
+    for (var i = 0; i < songs.length; i++) {
+      final song = songs[i];
+      final cacheKey = song.albumId ?? song.id;
+      if (_artworkCache.containsKey(cacheKey)) continue;
+
+      final artUri = await _artworkFileUri(song);
+      if (artUri == null) continue;
+
+      final globalIndex = offset + i;
+      if (globalIndex >= fullQueueItems.length) continue;
+
+      final updated = fullQueueItems[globalIndex].copyWith(artUri: artUri);
+      fullQueueItems[globalIndex] = updated;
+      queue.add(List.of(fullQueueItems));
+
+      if (mediaItem.value?.id == updated.id) {
+        mediaItem.add(updated);
+      }
+    }
   }
 
   Future<void> _init() async {
@@ -75,53 +210,6 @@ class MyAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
       _artworkCache[cacheKey] = null;
       return null;
     }
-  }
-
-  Future<void> setSongs(List<SongModel> songs, {int initialIndex = 0}) async {
-    final items = <MediaItem>[];
-    final sources = <AudioSource>[];
-
-    // 1. Monta a queue SEM esperar artwork — usa cache se já tiver, senão null por enquanto
-    for (final song in songs) {
-      final cacheKey = song.albumId ?? song.id;
-      final cachedArt = _artworkCache[cacheKey]; // só olha cache, não busca
-      final resolvedId = _resolveSongUri(song);
-
-      final item = MediaItem(
-        id: resolvedId,
-        title: song.title,
-        artist: song.artist ?? 'Artista desconhecido',
-        album: song.album ?? 'Álbum desconhecido',
-        duration: song.duration != null
-            ? Duration(milliseconds: song.duration!)
-            : null,
-        artUri: cachedArt,
-      );
-      items.add(item);
-      sources.add(AudioSource.uri(Uri.parse(item.id), tag: item));
-    }
-
-    queue.add(items);
-
-    try {
-      await _player.setAudioSource(
-        ConcatenatingAudioSource(children: sources),
-        initialIndex: initialIndex,
-      );
-    } catch (e) {
-      debugPrint('ERRO AO CARREGAR PLAYLIST: $e');
-      return;
-    }
-
-    if (items.isNotEmpty) {
-      mediaItem.add(items[initialIndex]);
-    }
-
-    // 2. Toca IMEDIATAMENTE — não espera artwork nenhuma
-    // (o play() em si fica a cargo de quem chamou setSongs, ex: PlayerController)
-
-    // 3. Resolve artwork em background, sem bloquear nada
-    _resolveArtworkInBackground(songs, items, initialIndex);
   }
 
   Future<void> _resolveArtworkInBackground(

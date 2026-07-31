@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:glopplayer/controllers/library_controller.dart';
 import 'package:glopplayer/provider/playlist_provider.dart';
 import 'package:glopplayer/provider/theme_provider.dart';
+import 'package:glopplayer/screens/pages/cache_management_screen.dart';
 import 'package:glopplayer/screens/pages/local_library_screen.dart';
 import 'package:glopplayer/screens/pages/theme_settings_screen.dart';
 import 'package:glopplayer/theme/dynamic_color_wrapper.dart';
@@ -79,6 +80,8 @@ class MyApp extends StatelessWidget {
                   const ThemeSettingsScreen(),
               '/pages/local_library_screen': (context) =>
                   const LocalLibraryScreen(),
+              '/pages/cache_management_screen': (context) =>
+                  const CacheManagementScreen(),
             },
           );
         },

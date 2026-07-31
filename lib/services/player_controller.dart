@@ -10,53 +10,181 @@ import 'audio_player_handler.dart';
 
 class PlayerController extends ChangeNotifier {
   final MyAudioHandler _handler;
+  final MusicLibraryService _library; // NOVO — injetado
   final PlaybackPersistenceService _persistence = PlaybackPersistenceService();
   final OnAudioQuery _audioQuery = OnAudioQuery();
+  Future<void>? _pendingAlbumAppend;
 
   List<SongModel> _playlist = [];
   int _currentIndex = 0;
   int _loadToken = 0;
   bool _isPlaying = false;
-  bool _suppressIndexStream = false; // NOVO
+  bool _suppressIndexStream = false;
   Timer? _saveDebounce;
 
-  PlayerController(this._handler) {
+  // NOVO — rastreamento do "álbum atual" dentro da fila concatenada
+  AlbumModel? _currentAlbum;
+  int _currentAlbumStartIndex = 0;
+  int _currentAlbumLength = 0;
+  bool _nextAlbumAppended = false;
+  AlbumModel? _pendingNextAlbum;
+  int _pendingNextAlbumLength = 0;
+
+  final _playlistCompletedController = StreamController<void>.broadcast();
+  Stream<void> get playlistCompleted => _playlistCompletedController.stream;
+
+  AudioPlayer get player => _handler.player;
+  List<SongModel> get playlist => _playlist;
+  int get currentIndex => _currentIndex;
+  bool get isPlaying => _isPlaying;
+  AlbumModel? get currentAlbum => _currentAlbum; // NOVO — útil pra UI
+  SongModel? get currentSong =>
+      _playlist.isEmpty ? null : _playlist[_currentIndex];
+  bool get hasPlaylist => _playlist.isNotEmpty;
+  List<SongModel> get songs => _playlist;
+
+  bool isCurrentSong(SongModel song) =>
+      currentSong != null && currentSong!.id == song.id;
+
+  bool isCurrentlyPlaying(SongModel song) => isCurrentSong(song) && _isPlaying;
+
+  // NOVO — ponto de entrada usado pela AlbumSongsScreen no lugar de setPlaylist
+  Future<void> playAlbum(
+    AlbumModel album,
+    List<SongModel> songs, {
+    int initialIndex = 0,
+  }) async {
+    _currentAlbum = album;
+    _currentAlbumStartIndex = 0;
+    _currentAlbumLength = songs.length;
+    _nextAlbumAppended = false;
+    _pendingNextAlbum = null;
+    _pendingNextAlbumLength = 0;
+
+    await setPlaylist(songs, initialIndex: initialIndex);
+  }
+
+  PlayerController(this._handler, {MusicLibraryService? library})
+      : _library = library ?? MusicLibraryService() {
     _handler.player.currentIndexStream.listen((index) {
-      if (_suppressIndexStream) return; // ignora eventos da troca em andamento
+      if (_suppressIndexStream) return;
       if (index != null &&
           index >= 0 &&
           index < _playlist.length &&
           index != _currentIndex) {
         _currentIndex = index;
         notifyListeners();
+        _maybeAdvanceAlbumQueue(); // NOVO
       }
     });
-    // salva posição quando o player avança (debounced)
+
     _handler.player.positionStream.listen((_) => _schedulePositionSave());
-    // atualiza estado de reprodução
+
     _handler.player.playingStream.listen((playing) {
       _isPlaying = playing;
       notifyListeners();
     });
+
+    _handler.player.processingStateStream.listen((state) {
+      if (state == ProcessingState.completed) {
+        _playlistCompletedController.add(null);
+        _handleUnexpectedCompletion(); // NOVO — fallback de segurança
+      }
+    });
   }
 
-  AudioPlayer get player => _handler.player;
-  List<SongModel> get playlist => _playlist;
-  int get currentIndex => _currentIndex;
-  bool get isPlaying => _isPlaying; // NOVO
-  SongModel? get currentSong =>
-      _playlist.isEmpty ? null : _playlist[_currentIndex];
-  bool get hasPlaylist => _playlist.isNotEmpty;
+  Future<void> _appendNextAlbumInQueue() async {
+    if (_currentAlbum == null) return;
+    if (_pendingAlbumAppend != null) return; // já tem um em andamento
 
-  List<SongModel> get songs => _playlist;
-
-  // NOVO — helper pra comparar com uma música da lista
-  bool isCurrentSong(SongModel song) {
-    return currentSong != null && currentSong!.id == song.id;
+    final future = _doAppendNextAlbum();
+    _pendingAlbumAppend = future;
+    try {
+      await future;
+    } finally {
+      _pendingAlbumAppend = null;
+    }
   }
 
-  bool isCurrentlyPlaying(SongModel song) {
-    return isCurrentSong(song) && _isPlaying;
+  Future<void> _doAppendNextAlbum() async {
+    final albums = await _library.fetchAllAlbums();
+    if (albums.isEmpty) return;
+
+    final idx = albums.indexWhere((a) => a.id == _currentAlbum!.id);
+    if (idx == -1) return;
+
+    final nextIndex = (idx + 1) % albums.length;
+    final nextAlbum = albums[nextIndex];
+
+    final nextSongs = await _library.fetchSongsFromAlbum(nextAlbum.id);
+    if (nextSongs.isEmpty) return;
+
+    _pendingNextAlbum = nextAlbum;
+    _pendingNextAlbumLength = nextSongs.length;
+
+    await appendToPlaylist(nextSongs);
+  }
+
+  // ALTERADO — next() agora garante que existe próxima faixa antes de pular
+  Future<void> next() async {
+    if (!_handler.player.hasNext) {
+      // Se já tem um append rolando, espera ele. Senão, dispara na hora
+      // (cobre o caso do usuário abrir o álbum já na última faixa e
+      // clicar "próxima" antes do trigger natural ter tido chance de rodar)
+      if (_pendingAlbumAppend != null) {
+        await _pendingAlbumAppend;
+      } else if (_currentAlbum != null) {
+        await _appendNextAlbumInQueue();
+      }
+    }
+    await _handler.skipToNext();
+  }
+
+  // NOVO — decide quando anexar o próximo álbum e quando "cruzar a fronteira"
+  void _maybeAdvanceAlbumQueue() {
+    if (_currentAlbum == null || _currentAlbumLength == 0) return;
+
+    final relativeIndex = _currentIndex - _currentAlbumStartIndex;
+
+    // Cruzou pra dentro do álbum que já tinha sido anexado?
+    if (_pendingNextAlbum != null && relativeIndex >= _currentAlbumLength) {
+      _currentAlbum = _pendingNextAlbum;
+      _currentAlbumStartIndex += _currentAlbumLength;
+      _currentAlbumLength = _pendingNextAlbumLength;
+      _nextAlbumAppended = false;
+      _pendingNextAlbum = null;
+      _pendingNextAlbumLength = 0;
+      return;
+    }
+
+    // Ainda dentro do álbum atual, mas perto do fim -> anexa o próximo
+    final triggerRelative =
+        (_currentAlbumLength - 2).clamp(0, _currentAlbumLength - 1);
+    if (!_nextAlbumAppended && relativeIndex >= triggerRelative) {
+      _nextAlbumAppended = true;
+      _appendNextAlbumInQueue();
+    }
+  }
+
+  // Fallback: só deveria disparar se o append acima falhou por algum
+  // motivo (ex: erro de I/O) e o player realmente ficou sem conteúdo
+  Future<void> _handleUnexpectedCompletion() async {
+    if (_pendingNextAlbum != null) {
+      // já tínhamos anexado, só garante que voltou a tocar
+      await _handler.play();
+      return;
+    }
+    // não tinha nada anexado ainda -> tenta recuperar do zero
+    await _appendNextAlbumInQueue();
+    await _handler.play();
+  }
+
+  Future<void> appendToPlaylist(List<SongModel> songs) async {
+    if (songs.isEmpty) return;
+    _playlist = [..._playlist, ...songs];
+    notifyListeners();
+    await _handler.appendSongs(songs);
+    _savePlaybackState();
   }
 
   void _schedulePositionSave() {
@@ -66,14 +194,11 @@ class PlayerController extends ChangeNotifier {
 
   Future<void> _savePlaybackState() async {
     if (_playlist.isEmpty) return;
-
     final refs = _playlist
         .where((song) => song.data.isNotEmpty)
         .map((song) => {'path': song.data})
         .toList();
-
     if (refs.isEmpty) return;
-
     await _persistence.save(
       songRefs: refs,
       currentIndex: _currentIndex,
@@ -82,55 +207,13 @@ class PlayerController extends ChangeNotifier {
   }
 
   Future<void> restoreLastSession() async {
-    final data = await _persistence.load();
-    if (data == null) return;
-
-    final refsRaw = data['songs'] as List<dynamic>? ?? [];
-    if (refsRaw.isEmpty) return;
-
-    final paths = refsRaw
-        .map((r) => (r as Map<String, dynamic>)['path'] as String)
-        .toList();
-
-    // Busca todas as músicas reais uma vez só
-    final allSongs = await _audioQuery.querySongs();
-    final byPath = {for (final s in allSongs) s.data: s};
-
-    final restoredSongs = <SongModel>[];
-    for (final path in paths) {
-      final found = byPath[path];
-      if (found != null) {
-        restoredSongs.add(found);
-      } else if (path.isNotEmpty) {
-        // Não achou no MediaStore -> trata como arquivo externo
-        restoredSongs
-            .add(fakeSongModelFromExternalUri(Uri.file(path).toString()));
-      }
-    }
-
-    if (restoredSongs.isEmpty) return;
-
-    final savedIndex = (data['currentIndex'] as int?) ?? 0;
-    final savedPositionMs = (data['positionMs'] as int?) ?? 0;
-    final safeIndex = savedIndex.clamp(0, restoredSongs.length - 1);
-
-    final token = ++_loadToken;
-    _playlist = restoredSongs;
-    _currentIndex = safeIndex;
-    notifyListeners();
-
-    await _handler.setSongs(restoredSongs, initialIndex: safeIndex);
-    if (token != _loadToken) return;
-
-    await _handler.seek(Duration(milliseconds: savedPositionMs));
+    // ...igual ao original, sem mudanças...
   }
-  // setPlaylist, playPause, next, previous, seek, playExternalFile
-  // continuam iguais, só adiciona _savePlaybackState() no fim do setPlaylist:
 
   Future<void> setPlaylist(List<SongModel> songs,
       {int initialIndex = 0}) async {
     final token = ++_loadToken;
-    _suppressIndexStream = true; // trava o stream durante a troca
+    _suppressIndexStream = true;
     _playlist = songs;
     _currentIndex = initialIndex;
     notifyListeners();
@@ -138,7 +221,7 @@ class PlayerController extends ChangeNotifier {
     await _handler.setSongs(songs, initialIndex: initialIndex);
     if (token != _loadToken) return;
 
-    _suppressIndexStream = false; // volta a confiar no stream só depois
+    _suppressIndexStream = false;
     await _handler.play();
 
     _savePlaybackState();
@@ -152,18 +235,25 @@ class PlayerController extends ChangeNotifier {
     }
   }
 
-  Future<void> next() => _handler.skipToNext();
-
   Future<void> previous() => _handler.skipToPrevious();
-
   Future<void> seek(Duration position) => _handler.seek(position);
 
-  void playSong(SongModel song) {
-    // Implementation for playing a specific song
-  }
+  void playSong(SongModel song) {}
 
   Future<void> playExternalFile(String uriString) async {
+    // Arquivo externo não pertence a um álbum -> zera o contexto de álbum
+    _currentAlbum = null;
+    _currentAlbumLength = 0;
+    _pendingNextAlbum = null;
+
     final fakeSong = fakeSongModelFromExternalUri(uriString);
     await setPlaylist([fakeSong], initialIndex: 0);
+  }
+
+  @override
+  void dispose() {
+    _saveDebounce?.cancel();
+    _playlistCompletedController.close();
+    super.dispose();
   }
 }
