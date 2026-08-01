@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:glopplayer/services/music_library_service.dart';
 import 'package:glopplayer/services/playback_persistence_service.dart';
+import 'package:home_widget/home_widget.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:on_audio_query_forked/on_audio_query.dart';
 
@@ -12,7 +13,6 @@ class PlayerController extends ChangeNotifier {
   final MyAudioHandler _handler;
   final MusicLibraryService _library; // NOVO — injetado
   final PlaybackPersistenceService _persistence = PlaybackPersistenceService();
-  final OnAudioQuery _audioQuery = OnAudioQuery();
   Future<void>? _pendingAlbumAppend;
 
   List<SongModel> _playlist = [];
@@ -75,6 +75,7 @@ class PlayerController extends ChangeNotifier {
         _currentIndex = index;
         notifyListeners();
         _maybeAdvanceAlbumQueue(); // NOVO
+        unawaited(_saveWidgetState());
       }
     });
 
@@ -83,6 +84,7 @@ class PlayerController extends ChangeNotifier {
     _handler.player.playingStream.listen((playing) {
       _isPlaying = playing;
       notifyListeners();
+      unawaited(_saveWidgetState());
     });
 
     _handler.player.processingStateStream.listen((state) {
@@ -185,6 +187,25 @@ class PlayerController extends ChangeNotifier {
     notifyListeners();
     await _handler.appendSongs(songs);
     _savePlaybackState();
+    unawaited(_saveWidgetState());
+  }
+
+  Future<void> _saveWidgetState() async {
+    final mediaItem = _handler.mediaItem.value;
+    final title = mediaItem?.title ?? currentSong?.title ?? '';
+    final artist = mediaItem?.artist ?? currentSong?.artist ?? '';
+    final artworkPath = mediaItem?.artUri?.path ?? '';
+
+    await Future.wait([
+      HomeWidget.saveWidgetData<String>('title', title),
+      HomeWidget.saveWidgetData<String>('artist', artist),
+      HomeWidget.saveWidgetData<String>('artworkPath', artworkPath),
+      HomeWidget.saveWidgetData<bool>('isPlaying', _isPlaying),
+    ]);
+
+    await HomeWidget.updateWidget(
+      qualifiedAndroidName: 'com.glopblog.glopplayer.PlayerWidgetProvider',
+    );
   }
 
   void _schedulePositionSave() {
@@ -225,6 +246,7 @@ class PlayerController extends ChangeNotifier {
     await _handler.play();
 
     _savePlaybackState();
+    unawaited(_saveWidgetState());
   }
 
   Future<void> playPause() async {

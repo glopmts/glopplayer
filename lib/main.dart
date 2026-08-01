@@ -1,6 +1,9 @@
+import 'dart:async';
+
 import 'package:app_links/app_links.dart';
 import 'package:audio_service/audio_service.dart';
 import 'package:flutter/material.dart';
+import 'package:home_widget/home_widget.dart';
 import 'package:glopplayer/controllers/library_controller.dart';
 import 'package:glopplayer/provider/playlist_provider.dart';
 import 'package:glopplayer/provider/theme_provider.dart';
@@ -52,17 +55,58 @@ void _handleReceivedUri(Uri uri) {
   playerController.playExternalFile(uri.toString());
 }
 
-class MyApp extends StatelessWidget {
+class MyApp extends StatefulWidget {
   const MyApp({super.key});
+
+  @override
+  State<MyApp> createState() => _MyAppState();
+}
+
+class _MyAppState extends State<MyApp> {
+  StreamSubscription<Uri?>? _widgetSubscription;
+
+  @override
+  void initState() {
+    super.initState();
+    HomeWidget.initiallyLaunchedFromHomeWidget().then(_handleWidgetUri);
+    _widgetSubscription = HomeWidget.widgetClicked.listen(_handleWidgetUri);
+  }
+
+  @override
+  void dispose() {
+    _widgetSubscription?.cancel();
+    super.dispose();
+  }
+
+  void _handleWidgetUri(Uri? uri) {
+    if (uri == null) return;
+    final action = uri.host.isNotEmpty
+        ? uri.host.toLowerCase()
+        : uri.pathSegments.isNotEmpty
+            ? uri.pathSegments.first.toLowerCase()
+            : '';
+
+    switch (action) {
+      case 'playpause':
+        playerController.playPause();
+        break;
+      case 'next':
+        playerController.next();
+        break;
+      case 'previous':
+        playerController.previous();
+        break;
+      default:
+        break;
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
     return MultiProvider(
       providers: [
-        ChangeNotifierProvider.value(
-            value: playerController), // única linha do PlayerController
-        ChangeNotifierProvider(
-            create: (_) => PlaylistProvider()..loadPlaylists()),
+        ChangeNotifierProvider.value(value: playerController),
+        ChangeNotifierProvider(create: (_) => PlaylistProvider()..loadPlaylists()),
         ChangeNotifierProvider(create: (_) => ThemeProvider()),
         ChangeNotifierProvider(create: (_) => LibraryController()),
       ],
