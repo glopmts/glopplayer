@@ -28,6 +28,8 @@ class MyAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
     return song.uri ?? '';
   }
 
+  
+
   Future<void> setSongs(List<SongModel> songs, {int initialIndex = 0}) async {
     final items = <MediaItem>[];
     final sources = <AudioSource>[];

@@ -9,9 +9,8 @@ SongModel fakeSongModelFromExternalUri(String uriString) {
 
   if (isContentUri) {
     displayName = 'Áudio externo';
-    dataPath = ''; // content:// não tem path de arquivo tradicional
+    dataPath = uriString; // <- mantém a content:// URI, não zera
   } else {
-    // uri.pathSegments ou uri.toFilePath() dependendo do scheme (file://)
     dataPath = uri.scheme == 'file' ? uri.toFilePath() : uriString;
     displayName = dataPath.split('/').last;
   }

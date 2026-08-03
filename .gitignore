@@ -46,3 +46,4 @@ app.*.map.json
 
 windows
 web
+log.txt

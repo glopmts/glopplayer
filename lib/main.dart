@@ -32,27 +32,24 @@ Future<void> main() async {
     ),
   );
 
-  playerController = PlayerController(audioHandler); // <- FALTAVA ISSO
+  playerController = PlayerController(audioHandler);
 
   runApp(const MyApp());
-  playerController.restoreLastSession();
-  _setupExternalAudioIntentListener();
-}
 
-void _setupExternalAudioIntentListener() {
   final appLinks = AppLinks();
+  final initialUri = await appLinks.getInitialLink();
 
-  appLinks.uriLinkStream.listen((uri) {
-    _handleReceivedUri(uri);
-  }, onError: (err) => debugPrint('Erro na intent de áudio: $err'));
+  if (initialUri != null) {
+    await playerController.playExternalFile(initialUri.toString());
+  } else {
+    await playerController.restoreLastSession();
+  }
 
-  appLinks.getInitialLink().then((uri) {
-    if (uri != null) _handleReceivedUri(uri);
-  });
-}
-
-void _handleReceivedUri(Uri uri) {
-  playerController.playExternalFile(uri.toString());
+  // agora só escuta links que chegarem DEPOIS do app já estar rodando
+  appLinks.uriLinkStream.listen(
+    (uri) => playerController.playExternalFile(uri.toString()),
+    onError: (err) => debugPrint('Erro na intent de áudio: $err'),
+  );
 }
 
 class MyApp extends StatefulWidget {
@@ -106,7 +103,8 @@ class _MyAppState extends State<MyApp> {
     return MultiProvider(
       providers: [
         ChangeNotifierProvider.value(value: playerController),
-        ChangeNotifierProvider(create: (_) => PlaylistProvider()..loadPlaylists()),
+        ChangeNotifierProvider(
+            create: (_) => PlaylistProvider()..loadPlaylists()),
         ChangeNotifierProvider(create: (_) => ThemeProvider()),
         ChangeNotifierProvider(create: (_) => LibraryController()),
       ],
